@@ -120,7 +120,7 @@ case "$COMMAND" in
         echo "Backing up: $LOCAL_DIR"
         echo "       To: $HPSS_PATH"
 
-        htar -cvf "$HPSS_PATH" -H crc:verify=all "$LOCAL_DIR"
+        htar -cvf "$HPSS_PATH" -H crc:verify=all "$LOCAL_DIR" < /dev/null
 
         if [[ $? -eq 0 ]]; then
             echo "Backup complete: $HPSS_PATH"
@@ -185,7 +185,7 @@ case "$COMMAND" in
         echo "      To: $RESTORE_DIR"
 
         cd "$RESTORE_DIR" || exit 1
-        htar -xvf "$HPSS_PATH"
+        htar -xvf "$HPSS_PATH" < /dev/null
 
         if [[ $? -eq 0 ]]; then
             echo "Restore complete."
