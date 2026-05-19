@@ -120,9 +120,56 @@ case "$COMMAND" in
         echo "Backing up: $LOCAL_DIR"
         echo "       To: $HPSS_PATH"
 
-        htar -cvf "$HPSS_PATH" -H crc:verify=all "$LOCAL_DIR" < /dev/null
+        # htar can hang holding an open HPSS NDAPI session after a successful
+        # verify. Watch its output for "Verify complete"; after a grace period,
+        # SIGTERM the process and treat the kill as success.
+        HTAR_LOG="$(mktemp -t hpss-backup.XXXXXX)"
+        VERIFIED_FLAG="${HTAR_LOG}.verified"
+        GRACE_SECONDS=120
+        HTAR_PID=
+        WATCHDOG_PID=
 
-        if [[ $? -eq 0 ]]; then
+        cleanup() {
+            if [[ -n "$WATCHDOG_PID" ]]; then
+                kill "$WATCHDOG_PID" 2>/dev/null
+                wait "$WATCHDOG_PID" 2>/dev/null
+            fi
+            if [[ -n "$HTAR_PID" ]] && kill -0 "$HTAR_PID" 2>/dev/null; then
+                kill -TERM "$HTAR_PID" 2>/dev/null
+                sleep 2
+                kill -KILL "$HTAR_PID" 2>/dev/null
+                wait "$HTAR_PID" 2>/dev/null
+            fi
+            rm -f "$HTAR_LOG" "$VERIFIED_FLAG"
+        }
+        trap cleanup EXIT INT TERM
+
+        htar -cvf "$HPSS_PATH" -H crc:verify=all "$LOCAL_DIR" < /dev/null \
+            > >(tee "$HTAR_LOG") 2>&1 &
+        HTAR_PID=$!
+
+        (
+            while kill -0 "$HTAR_PID" 2>/dev/null; do
+                if grep -q "Verify complete" "$HTAR_LOG" 2>/dev/null; then
+                    sleep "$GRACE_SECONDS"
+                    kill -0 "$HTAR_PID" 2>/dev/null || exit 0
+                    touch "$VERIFIED_FLAG"
+                    kill -TERM "$HTAR_PID" 2>/dev/null
+                    sleep 5
+                    kill -KILL "$HTAR_PID" 2>/dev/null
+                    exit 0
+                fi
+                sleep 5
+            done
+        ) &
+        WATCHDOG_PID=$!
+
+        wait "$HTAR_PID"
+        HTAR_RC=$?
+
+        if [[ -f "$VERIFIED_FLAG" ]]; then
+            echo "Backup complete (htar terminated ${GRACE_SECONDS}s after verify): $HPSS_PATH"
+        elif [[ $HTAR_RC -eq 0 ]]; then
             echo "Backup complete: $HPSS_PATH"
         else
             echo "Error: htar failed." >&2
